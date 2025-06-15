@@ -1,5 +1,3 @@
-# app.py
-
 import streamlit as st
 import mysql.connector
 import bcrypt
@@ -36,6 +34,19 @@ st.markdown("""
 st.markdown('<div class="main">', unsafe_allow_html=True)
 
 # ────────────────────────────────────────────────────────────────────────────────
+# Helper to show or download a PDF
+def show_pdf(title, path):
+    st.header(f"📄 {title}")
+    with open(path, "rb") as f:
+        pdf_bytes = f.read()
+    st.download_button(
+        label=f"Download {title} (PDF)",
+        data=pdf_bytes,
+        file_name=f"{title.replace(' ', '_').lower()}.pdf",
+        mime="application/pdf"
+    )
+
+# ────────────────────────────────────────────────────────────────────────────────
 # 2) IDLE AUTO-LOGOUT SETUP
 IDLE_TIMEOUT = timedelta(minutes=5)
 if 'last_active' not in st.session_state:
@@ -69,7 +80,6 @@ st.session_state.setdefault('admin_exists', False)
 with st.spinner("Checking for Admin…"):
     cursor.execute("SELECT COUNT(*) cnt FROM users WHERE role='admin'")
     st.session_state.admin_exists = cursor.fetchone()['cnt'] > 0
-
 st.session_state.setdefault('user', None)
 st.session_state.setdefault('role', None)
 st.session_state.setdefault('returned_requests', set())
@@ -80,13 +90,11 @@ def first_run_admin():
     st.image("ump.jpg", use_container_width=True)
     st.header("⚙ First-Time Admin Setup")
     st.info("Create the initial Admin account.")
-
     n  = st.text_input("Full Name")
     e  = st.text_input("Email")
     r  = st.text_input("RFID ID")
     p1 = st.text_input("Password", type="password")
     p2 = st.text_input("Confirm Password", type="password")
-
     if st.button("Create Admin"):
         if not all([n,e,r,p1,p2]):
             st.error("All fields are required.")
@@ -115,11 +123,9 @@ def login_screen():
     st.image("ump.jpg", use_container_width=True)
     st.header("🏷 Lab Equipment Lending")
     st.caption(datetime.now().strftime("🕒 %Y-%m-%d %H:%M:%S"))
-
     chosen = st.radio("I am logging in as:", ["Admin/Staff", "Student"])
     method = st.selectbox("Login via:", ["Email/Password", "RFID"])
     rec = None
-
     if method == "Email/Password":
         e = st.text_input("Email")
         p = st.text_input("Password", type="password")
@@ -133,7 +139,6 @@ def login_screen():
                 st.error("Role mismatch.")
             else:
                 rec = u
-
     else:
         rfid = st.text_input("RFID ID")
         if st.button("Log In"):
@@ -146,7 +151,6 @@ def login_screen():
                 st.error("Role mismatch.")
             else:
                 rec = u
-
     if rec:
         st.success(f"Welcome, {rec['name']}!")
         st.session_state.user = rec
@@ -154,7 +158,7 @@ def login_screen():
     st.stop()
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 7) SIDEBAR + LOGOUT + METRICS
+# 7) SIDEBAR + LOGOUT + METRICS + MENU
 def init_sidebar():
     st.sidebar.image("ump.jpg", use_container_width=True)
     st.sidebar.markdown("---")
@@ -162,7 +166,6 @@ def init_sidebar():
         u = st.session_state.user
         st.sidebar.write(f"*User:* {u['name']}")
         st.sidebar.write(f"*Role:* {st.session_state.role}")
-
         if st.session_state.role == "Admin/Staff":
             with st.spinner("Loading metrics…"):
                 cursor.execute("SELECT COUNT(*) cnt FROM equipment")
@@ -171,16 +174,38 @@ def init_sidebar():
                 ss = int(cursor.fetchone()['cnt'])
                 st.sidebar.metric("Total Equipment", eq)
                 st.sidebar.metric("Total Students", ss)
-
         if st.sidebar.button("Logout"):
             st.session_state.user = None
             st.session_state.role = None
             st.success("🔒 Logged out.")
             st.stop()
 
+    # Add our two new menu items for both roles:
+    if st.session_state.role == "Admin/Staff":
+        menu = st.sidebar.selectbox(
+            "Admin Menu",
+            ["Manage Inventory", "Add Equipment", "Register User",
+             "Installation Guide", "User Manual"]
+        )
+    else:
+        menu = st.sidebar.selectbox(
+            "Student Menu",
+            ["Borrow Equipment", "Return Equipment", "My History",
+             "Installation Guide", "User Manual"]
+        )
+    return menu
+
 # ────────────────────────────────────────────────────────────────────────────────
 # 8) ADMIN DASHBOARD
-def admin_dashboard():
+def admin_dashboard(choice):
+    if choice == "Installation Guide":
+        show_pdf("Installation Guide", "docs/installation_guide.pdf")
+        return
+    elif choice == "User Manual":
+        show_pdf("User Manual", "docs/user_manual.pdf")
+        return
+
+    # Shared header
     st.image("ump.jpg", width=720)
     st.header(f"👋 Hello, {st.session_state.user['name']}")
 
@@ -196,7 +221,6 @@ def admin_dashboard():
         cursor.execute("SELECT COUNT(*) cnt FROM borrow_requests WHERE status='confirmed'")
         c3.metric("Active Borrows", int(cursor.fetchone()['cnt']))
 
-    choice = st.sidebar.selectbox("Admin Menu", ["Manage Inventory","Add Equipment","Register User"])
     if choice == "Manage Inventory":
         st.subheader("🔎 Inventory Browser")
         cursor.execute("SELECT * FROM equipment")
@@ -231,10 +255,16 @@ def admin_dashboard():
                             st.error("Cannot go below zero.")
                         else:
                             with st.spinner("Updating…"):
-                                cursor.execute("UPDATE equipment SET available_qty=%s WHERE equipment_id=%s", (new, it['equipment_id']))
                                 cursor.execute(
-                                    "INSERT INTO inventory_log (equipment_id,quantity_change,action,user_id) VALUES (%s,%s,%s,%s)",
-                                    (it['equipment_id'], delta, 'add' if delta > 0 else 'outgoing', st.session_state.user['user_id'])
+                                    "UPDATE equipment SET available_qty=%s WHERE equipment_id=%s",
+                                    (new, it['equipment_id'])
+                                )
+                                cursor.execute(
+                                    "INSERT INTO inventory_log (equipment_id,quantity_change,action,user_id) "
+                                    "VALUES (%s,%s,%s,%s)",
+                                    (it['equipment_id'], delta,
+                                     'add' if delta > 0 else 'outgoing',
+                                     st.session_state.user['user_id'])
                                 )
                                 db.commit()
                             st.success("Inventory updated.")
@@ -256,16 +286,20 @@ def admin_dashboard():
                     else:
                         with st.spinner("Adding…"):
                             cursor.execute(
-                                "INSERT INTO equipment (name,description,total_qty,available_qty) VALUES (%s,%s,%s,%s)",
+                                "INSERT INTO equipment (name,description,total_qty,available_qty) "
+                                "VALUES (%s,%s,%s,%s)",
                                 (name, desc, qty, qty)
                             )
                             eid = cursor.lastrowid
                             code = f"EQ{eid:05d}"
-                            cursor.execute("UPDATE equipment SET qr_code=%s WHERE equipment_id=%s", (code, eid))
+                            cursor.execute(
+                                "UPDATE equipment SET qr_code=%s WHERE equipment_id=%s",
+                                (code, eid)
+                            )
                             db.commit()
                         buf = io.BytesIO()
                         qrcode.make(code).save(buf)
-                        st.image(buf.getvalue(), caption=code, use_container_width=False)
+                        st.image(buf.getvalue(), caption=code)
                         st.success("Equipment added.")
                         st.balloons()
 
@@ -291,7 +325,8 @@ def admin_dashboard():
                         with st.spinner("Registering…"):
                             ph = bcrypt.hashpw(p1.encode(), bcrypt.gensalt()).decode()
                             cursor.execute(
-                                "INSERT INTO users (name,email,password_hash,rfid,role) VALUES (%s,%s,%s,%s,%s)",
+                                "INSERT INTO users (name,email,password_hash,rfid,role) "
+                                "VALUES (%s,%s,%s,%s,%s)",
                                 (n,e,ph,r,rl)
                             )
                             db.commit()
@@ -300,12 +335,18 @@ def admin_dashboard():
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 9) STUDENT DASHBOARD
-def student_dashboard():
+def student_dashboard(choice):
+    if choice == "Installation Guide":
+        show_pdf("Installation Guide", "docs/installation_guide.pdf")
+        return
+    elif choice == "User Manual":
+        show_pdf("User Manual", "docs/user_manual.pdf")
+        return
+
     st.image("ump.jpg", width=720)
     st.header(f"🎓 Welcome, {st.session_state.user['name']}!")
     st.caption(datetime.now().strftime("🕒 %Y-%m-%d %H:%M:%S"))
 
-    choice = st.sidebar.selectbox("Student Menu", ["Borrow Equipment","Return Equipment","My History"])
     if choice == "Borrow Equipment":
         st.subheader("🔍 Available Equipment")
         cursor.execute("SELECT equipment_id,name,available_qty FROM equipment WHERE available_qty>0")
@@ -323,43 +364,80 @@ def student_dashboard():
             borrow.append((eid,q))
         if borrow and st.button("Confirm Borrow"):
             with st.spinner("Processing…"):
-                cursor.execute("INSERT INTO borrow_requests (user_id,status) VALUES (%s,'confirmed')", (st.session_state.user['user_id'],))
+                cursor.execute(
+                    "INSERT INTO borrow_requests (user_id,status) VALUES (%s,'confirmed')",
+                    (st.session_state.user['user_id'],)
+                )
                 rid = cursor.lastrowid
                 for eid,q in borrow:
-                    cursor.execute("INSERT INTO borrow_items (request_id,equipment_id,quantity) VALUES (%s,%s,%s)", (rid,eid,q))
-                    cursor.execute("UPDATE equipment SET available_qty=available_qty-%s WHERE equipment_id=%s", (q,eid))
-                    cursor.execute("INSERT INTO inventory_log (equipment_id,quantity_change,action,user_id) VALUES (%s,%s,'borrow',%s)", (eid,-q,st.session_state.user['user_id']))
-                cursor.execute("INSERT INTO borrow_history (request_id,action) VALUES (%s,'borrow')", (rid,))
+                    cursor.execute(
+                        "INSERT INTO borrow_items (request_id,equipment_id,quantity) VALUES (%s,%s,%s)",
+                        (rid,eid,q)
+                    )
+                    cursor.execute(
+                        "UPDATE equipment SET available_qty=available_qty-%s WHERE equipment_id=%s",
+                        (q,eid)
+                    )
+                    cursor.execute(
+                        "INSERT INTO inventory_log (equipment_id,quantity_change,action,user_id) "
+                        "VALUES (%s,%s,'borrow',%s)",
+                        (eid,-q,st.session_state.user['user_id'])
+                    )
+                cursor.execute(
+                    "INSERT INTO borrow_history (request_id,action) VALUES (%s,'borrow')",
+                    (rid,)
+                )
                 db.commit()
-            code=f"BR{rid:05d}"; buf=io.BytesIO(); qrcode.make(code).save(buf)
-            st.image(buf.getvalue(), caption=code, use_container_width=False)
+            code = f"BR{rid:05d}"
+            buf  = io.BytesIO()
+            qrcode.make(code).save(buf)
+            st.image(buf.getvalue(), caption=code)
             st.success("Borrow confirmed!")
             st.balloons()
 
     elif choice == "Return Equipment":
         st.subheader("↩ Return Equipment")
-        img=st.camera_input("Scan Borrow QR")
+        img = st.camera_input("Scan Borrow QR")
         if img:
-            d=decode(Image.open(img))
+            d = decode(Image.open(img))
             if not d:
                 st.error("Invalid QR.")
             else:
-                qr=d[0].data.decode(); rid=int(qr.replace("BR",""))
+                qr  = d[0].data.decode()
+                rid = int(qr.replace("BR",""))
                 if rid in st.session_state.returned_requests:
                     st.error("Already returned.")
                     return
-                cursor.execute("SELECT * FROM borrow_requests WHERE request_id=%s AND status='confirmed'", (rid,))
+                cursor.execute(
+                    "SELECT * FROM borrow_requests WHERE request_id=%s AND status='confirmed'",
+                    (rid,)
+                )
                 if not cursor.fetchone():
                     st.error("Invalid or already returned.")
                     return
                 with st.spinner("Processing return…"):
-                    cursor.execute("SELECT equipment_id,quantity FROM borrow_items WHERE request_id=%s", (rid,))
+                    cursor.execute(
+                        "SELECT equipment_id,quantity FROM borrow_items WHERE request_id=%s",
+                        (rid,)
+                    )
                     its = cursor.fetchall()
                     for it in its:
-                        cursor.execute("UPDATE equipment SET available_qty=available_qty+%s WHERE equipment_id=%s", (it['quantity'], it['equipment_id']))
-                        cursor.execute("INSERT INTO inventory_log (equipment_id,quantity_change,action,user_id) VALUES (%s,%s,'return',%s)", (it['equipment_id'], it['quantity'], st.session_state.user['user_id']))
-                    cursor.execute("UPDATE borrow_requests SET status='cancelled' WHERE request_id=%s", (rid,))
-                    cursor.execute("INSERT INTO borrow_history (request_id,action) VALUES (%s,'return')", (rid,))
+                        cursor.execute(
+                            "UPDATE equipment SET available_qty=available_qty+%s WHERE equipment_id=%s",
+                            (it['quantity'], it['equipment_id'])
+                        )
+                        cursor.execute(
+                            "INSERT INTO inventory_log (equipment_id,quantity_change,action,user_id) "
+                            "VALUES (%s,%s,'return',%s)",
+                            (it['equipment_id'], it['quantity'], st.session_state.user['user_id'])
+                        )
+                    cursor.execute(
+                        "UPDATE borrow_requests SET status='cancelled' WHERE request_id=%s", (rid,)
+                    )
+                    cursor.execute(
+                        "INSERT INTO borrow_history (request_id,action) VALUES (%s,'return')",
+                        (rid,)
+                    )
                     db.commit()
                 st.session_state.returned_requests.add(rid)
                 st.success("Return successful!")
@@ -385,7 +463,7 @@ def student_dashboard():
             st.info("No history yet.")
         else:
             for r in recs:
-                st.write(f"[{r['performed_at']}]** Request #{r['request_id']} – {r['action'].title()}")
+                st.write(f"[{r['performed_at']}]** Request #{r['request_id']} – {r['action'].title()}**")
                 st.write(f"> {r['items']} • {r['status']}")
                 st.markdown("---")
 
@@ -396,11 +474,11 @@ if not st.session_state.admin_exists:
 elif st.session_state.user is None:
     login_screen()
 else:
-    init_sidebar()
+    choice = init_sidebar()
     if st.session_state.role == "Admin/Staff":
-        admin_dashboard()
+        admin_dashboard(choice)
     else:
-        student_dashboard()
+        student_dashboard(choice)
 
 st.markdown('</div>', unsafe_allow_html=True)
 st.markdown('<div class="footer">UMPSA Lab Equipment Lending App • © 2025</div>', unsafe_allow_html=True)
